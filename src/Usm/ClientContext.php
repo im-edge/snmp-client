@@ -255,7 +255,7 @@ class ClientContext
                     UsmStats::getErrorForVarBindList($pdu->varBinds) ?? 'unknown error'
                 );
             }
-            var_dump('NOT AUTH INCOMING, kein Report-Dings');
+            // NOT AUTH INCOMING, no Report handling
 
             return false;
         }

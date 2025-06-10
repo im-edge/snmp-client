@@ -324,13 +324,17 @@ class SnmpClient
         $id = $message->header->messageId;
         $clientContext = $this->pendingMessagesV3[$id] ?? null;
         if ($clientContext?->address->toString() !== $peer->toString()) {
-            printf("Peer address %s doesn't match the expected one (%s)\n", $peer, $clientContext?->address ?? 'none');
+            $this->logger?->warning(sprintf(
+                "Peer address %s doesn't match the expected one (%s)\n",
+                $peer,
+                $clientContext?->address ?? 'none'
+            ));
             return;
         }
         unset($this->pendingMessagesV3[$id]);
         /** @phpstan-ignore identical.alwaysFalse */ // Can be null, PHPStan doesn't get id. Or is it me?
         if ($clientContext === null) {
-            echo "No client context for $id\n";
+            $this->logger?->warning("No client context for $id");
             return;
         }
         try {
@@ -347,7 +351,7 @@ class SnmpClient
                     $this->handleIncomingResponse($check);
                 }
             } else {
-                echo "Check says NO\n";
+                // Check says NO
                 $this->trace?->append($message, PacketDirection::INCOMING, $peer);
             }
         } catch (\Exception $e) {
@@ -365,15 +369,6 @@ class SnmpClient
         // TODO: Logger::debug("Got message from $peer");
         try {
             $message = SnmpMessage::fromBinary($data);
-            /*
-            if ($data !== $message->toBinary()) {
-                var_dump('Incoming:');
-                echo TestHelper::niceHex($data);
-                var_dump('Re-encoded:');
-                echo TestHelper::niceHex($message->toBinary());
-                var_dump('Failed to encode the same way');
-            }
-            */
             $this->counter->receivedMessages++;
             if ($message instanceof SnmpV3Message) {
                 $this->handleIncomingV3Message($message, $peer);
@@ -381,7 +376,7 @@ class SnmpClient
                 $this->handleIncomingMessage($message, $peer);
             }
         } catch (\Exception $e) {
-            echo $e->getMessage();
+            $this->logger?->error($e->getMessage());
             $this->counter->receivedInvalidPackets++;
         }
     }
@@ -473,7 +468,7 @@ class SnmpClient
                 $this->outgoingRequests->complete($originalId)?->error($e);
                 return;
             }
-            /** @phpstan-ignore booleanNot.alwaysTrue */ // async operation changes the engine
+            /** @phpstan-ignore booleanNot.alwaysTrue */ // async operation changes the engine. Does it??
             if (!$context->engine->hasId()) {
                 $this->outgoingRequests->complete($originalId)?->error(
                     new SnmpAuthenticationException('Failed to retrieve Engine ID')
@@ -488,23 +483,19 @@ class SnmpClient
         $this->sendMessage($context->prepareMessage($pdu, $messageId), $context->address);
         delay(0); // TODO: test, whether and how this influences async operation
         try {
-            var_dump('SEND');
             $responsePdu = $deferred->getFuture()->await();
-            var_dump('GOT');
         } catch (\Exception $e) {
-            var_dump('EEEEEERRR' . $e->getMessage());
+            $this->logger?->error($e->getMessage());
             $this->outgoingRequests->complete($originalId)?->error($e);
             return;
         }
         if ($responsePdu->errorStatus->isError()) {
-            var_dump('IS ERROR');
             $this->outgoingRequests->complete($originalId)?->error(
                 new SnmpAuthenticationException('PDU has error -> TODO, not auth issue')
             );
             return;
         }
         if ($responsePdu instanceof Report) {
-            var_dump('IS REPPORT');
             $varBinds = $responsePdu->varBinds;
             if ($varBinds->hasOid(UsmStats::WRONG_DIGESTS)) {
                 $this->outgoingRequests->complete($originalId)?->error(
@@ -526,9 +517,7 @@ class SnmpClient
                 $this->sendMessage($context->prepareMessage($pdu, $messageId), $context->address);
                 delay(0); // TODO: test, whether and how this influences async operation
                 try {
-                    // var_dump('WAITING FOR IT');
                     $responsePdu = $deferred->getFuture()->await();
-                    // var_dump('HAVE IT');
                 } catch (\Exception $e) {
                     $this->outgoingRequests->complete($originalId)?->error($e);
                     return;
@@ -542,20 +531,13 @@ class SnmpClient
                         $deferred->error(new SnmpAuthenticationException('Still failing'));
                     }
                 } elseif ($deferred = $this->outgoingRequests->complete($originalId)) {
-                    // var_dump('HAVE ORIGINAL ID');
                     $deferred->complete($responsePdu);
-                } else {
-                    // var_dump('HAVE NO ID');
-                }
+                } // else -> no id
             }
         } elseif ($responsePdu instanceof Response) {
-            var_dump('IS RESPONSE');
             if ($deferred = $this->outgoingRequests->complete($originalId)) {
-                var_dump('YEAH, HAVE ID' . $originalId);
                 $deferred->complete($responsePdu);
-            } else {
-                var_dump('FCK, HAVE NO ID: ' . $originalId);
-            }
+            } // else: we do not have this id
         }
     }
 }

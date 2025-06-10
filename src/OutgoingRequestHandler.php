@@ -83,7 +83,7 @@ class OutgoingRequestHandler implements TimeoutSlotHandler, RequestIdConsumer
     {
         $deferred = $this->pendingRequests[$id] ?? null;
         if ($deferred === null) {
-            printf("Failed to reject %d with '%s', it's gone\n", $id, $error->getMessage());
+            // TODO: Log printf("Failed to reject %d with '%s', it's gone\n", $id, $error->getMessage());
             return;
         }
         unset($this->pendingRequests[$id]);
