@@ -4,7 +4,9 @@ namespace IMEdge\SnmpClient;
 
 use Amp\Future;
 use Amp\Socket\InternetAddress;
+use Amp\Socket\InternetAddressVersion;
 use Amp\Socket\ResourceUdpSocket;
+use Exception;
 use IMEdge\SnmpClient\Error\SnmpTimeoutError;
 use IMEdge\SnmpClient\Usm\ClientContext;
 use IMEdge\SnmpClient\Util\PacketDirection;
@@ -33,6 +35,8 @@ use IMEdge\SnmpPacket\Usm\UsmStats;
 use IMEdge\SnmpPacket\VarBindValue\ContextSpecific;
 use Psr\Log\LoggerInterface;
 use Revolt\EventLoop;
+use RuntimeException;
+use Throwable;
 
 use function Amp\delay;
 use function Amp\Socket\bindUdpSocket;
@@ -53,10 +57,12 @@ class SnmpClient
     protected SnmpClientCounter $counter;
     public ?SnmpPacketTrace $trace = null;
     protected ?ResourceUdpSocket $socket = null;
+    protected ?ResourceUdpSocket $socket6 = null;
 
     public function __construct(
-        protected InternetAddress $socketAddress = new InternetAddress('0.0.0.0', 0),
         protected ?LoggerInterface $logger = null,
+        protected InternetAddress $socketAddress = new InternetAddress('0.0.0.0', 0),
+        protected InternetAddress $socketAddressV6 = new InternetAddress('::', 0),
     ) {
         $this->counter = new SnmpClientCounter();
         $this->outgoingRequests = new OutgoingRequestHandler();
@@ -248,7 +254,7 @@ class SnmpClient
         $deferred = $this->outgoingRequests->schedulePdu($pdu);
         try {
             $this->sendPduToClient($client, $pdu);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             if (! $e instanceof SnmpTimeoutError) {
                 if ($id = $pdu->requestId) {
                     $this->outgoingRequests->reject($id, $e);
@@ -277,14 +283,26 @@ class SnmpClient
         }
     }
 
-    protected function socket(): ResourceUdpSocket
+    protected function socket(InternetAddressVersion $ipVersion): ResourceUdpSocket
     {
-        if ($this->socket === null) {
-            $this->socket = bindUdpSocket($this->socketAddress);
-            EventLoop::queue($this->keepReadingFromSocket(...));
+        switch ($ipVersion) {
+            case InternetAddressVersion::IPv4:
+                if ($this->socket === null) {
+                    $this->socket = bindUdpSocket($this->socketAddress);
+                    EventLoop::queue($this->keepReadingFromSocket(...));
+                }
+
+                return $this->socket;
+            case InternetAddressVersion::IPv6:
+                if ($this->socket6 === null) {
+                    $this->socket6 = bindUdpSocket($this->socketAddress);
+                    EventLoop::queue($this->keepReadingFromSocket6(...));
+                }
+
+                return $this->socket6;
         }
 
-        return $this->socket;
+        throw new RuntimeException('Got unexpected InternetAddressVersion: ' . $ipVersion->name);
     }
 
     protected function handleIncomingMessage(SnmpV1Message|SnmpV2Message $message, InternetAddress $peer): void
@@ -354,7 +372,7 @@ class SnmpClient
                 // Check says NO
                 $this->trace?->append($message, PacketDirection::INCOMING, $peer);
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->trace?->append($message, PacketDirection::INCOMING, $peer);
             if ($requestId = $message->scopedPdu->pdu?->requestId ?? null) {
                 if ($deferred = $this->outgoingRequests->complete($requestId)) {
@@ -375,7 +393,7 @@ class SnmpClient
             } elseif ($message instanceof SnmpV1Message) { // || instanceof SnmpV2Message (extends SnmpV1Message)
                 $this->handleIncomingMessage($message, $peer);
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->logger?->error($e->getMessage());
             $this->counter->receivedInvalidPackets++;
         }
@@ -384,7 +402,7 @@ class SnmpClient
     protected function keepReadingFromSocket(): void
     {
         if ($this->socket === null) {
-            throw new \RuntimeException('Cannot register socket handlers w/o socket');
+            throw new RuntimeException('Cannot register socket handlers w/o socket');
         }
         try {
             while ($received = $this->socket?->receive()) {
@@ -392,8 +410,8 @@ class SnmpClient
                 $this->handleData($data, $address);
             }
             $this->socket = null;
-            $this->outgoingRequests->rejectAll(new \Exception('Socket has been closed'));
-        } catch (\Throwable $error) {
+            $this->outgoingRequests->rejectAll(new Exception('Socket has been closed'));
+        } catch (Throwable $error) {
             $this->outgoingRequests->rejectAll($error);
             if ($this->socket !== null) {
                 $this->socket->close();
@@ -402,9 +420,30 @@ class SnmpClient
         }
     }
 
+    protected function keepReadingFromSocket6(): void
+    {
+        if ($this->socket6 === null) {
+            throw new RuntimeException('Cannot register socket6 handlers w/o socket');
+        }
+        try {
+            while ($received = $this->socket6?->receive()) {
+                [$address, $data] = $received;
+                $this->handleData($data, $address);
+            }
+            $this->socket = null;
+            $this->outgoingRequests->rejectAll(new Exception('Socket6 has been closed'));
+        } catch (Throwable $error) {
+            $this->outgoingRequests->rejectAll($error);
+            if ($this->socket6 !== null) {
+                $this->socket6->close();
+                $this->socket6 = null;
+            }
+        }
+    }
+
     protected function requireClient(string $targetId): ClientContext
     {
-        return $this->clients[$targetId] ?? throw new \RuntimeException('Unknown target: ' . $targetId);
+        return $this->clients[$targetId] ?? throw new RuntimeException('Unknown target: ' . $targetId);
     }
 
     protected function reserveMessageId(ClientContext $context): int
@@ -442,7 +481,7 @@ class SnmpClient
     protected function sendMessage(SnmpMessage $message, InternetAddress $address): void
     {
         $this->trace?->append($message, PacketDirection::OUTGOING, $address);
-        $this->socket()->send($address, $message->toBinary());
+        $this->socket($address->getVersion())->send($address, $message->toBinary());
     }
 
     protected function sendPduV1(ClientContext $context, Pdu $pdu): void
@@ -450,6 +489,9 @@ class SnmpClient
         $this->sendMessage($context->prepareMessage($pdu), $context->address);
     }
 
+    /**
+     * @throws SnmpAuthenticationException
+     */
     protected function sendPduV3(ClientContext $context, Pdu $pdu): void
     {
         if (! $context->wantsAuthentication()) {
@@ -464,7 +506,7 @@ class SnmpClient
         if (!$context->engine->hasId()) {
             try {
                 $this->sendAndWaitForDiscovery($context);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 $this->outgoingRequests->complete($originalId)?->error($e);
                 return;
             }
@@ -484,7 +526,7 @@ class SnmpClient
         delay(0); // TODO: test, whether and how this influences async operation
         try {
             $responsePdu = $deferred->getFuture()->await();
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->logger?->error($e->getMessage());
             $this->outgoingRequests->complete($originalId)?->error($e);
             return;
@@ -518,13 +560,13 @@ class SnmpClient
                 delay(0); // TODO: test, whether and how this influences async operation
                 try {
                     $responsePdu = $deferred->getFuture()->await();
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     $this->outgoingRequests->complete($originalId)?->error($e);
                     return;
                 }
                 if ($responsePdu->errorStatus->isError()) {
                     if ($deferred = $this->outgoingRequests->complete($originalId)) {
-                        $deferred->error(new \RuntimeException('ERROR, PDU has error -> TODO, not auth issue'));
+                        $deferred->error(new RuntimeException('ERROR, PDU has error -> TODO, not auth issue'));
                     }
                 } elseif (!$responsePdu instanceof Response) {
                     if ($deferred = $this->outgoingRequests->complete($originalId)) {
