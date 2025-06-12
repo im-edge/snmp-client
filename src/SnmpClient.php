@@ -236,6 +236,11 @@ class SnmpClient
      */
     public function registerTarget(string $id, InternetAddress $address, SnmpCredential $credential): void
     {
+        if (isset($this->clients[$id])) {
+            if (($this->clients[$id]->address == $address) && ($this->clients[$id]->credential == $credential)) {
+                return;
+            }
+        }
         $this->clients[$id] = new ClientContext($address, $credential);
     }
 
