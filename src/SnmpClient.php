@@ -184,7 +184,9 @@ class SnmpClient
                 assert(is_array($results[$key])); // sure?
                 if (isset($tables[$key])) {
                     assert(is_array($tables[$key])); // sure?
-                    array_push($tables[$key], ...(array) $results[$key]);
+                    foreach ($results[$key] as $k => $v) {
+                        $tables[$key][$k] = $v;
+                    }
                 } else {
                     $tables[$key] = $results[$key];
                 }
