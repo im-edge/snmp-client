@@ -62,7 +62,7 @@ class SnmpClient
     public function __construct(
         protected ?LoggerInterface $logger = null,
         protected InternetAddress $socketAddress = new InternetAddress('0.0.0.0', 0),
-        protected InternetAddress $socketAddressV6 = new InternetAddress('::', 0),
+        protected InternetAddress $socketAddress6 = new InternetAddress('::', 0),
     ) {
         $this->counter = new SnmpClientCounter();
         $this->outgoingRequests = new OutgoingRequestHandler();
@@ -295,14 +295,12 @@ class SnmpClient
                 return $this->socket;
             case InternetAddressVersion::IPv6:
                 if ($this->socket6 === null) {
-                    $this->socket6 = bindUdpSocket($this->socketAddress);
+                    $this->socket6 = bindUdpSocket($this->socketAddress6);
                     EventLoop::queue($this->keepReadingFromSocket6(...));
                 }
 
                 return $this->socket6;
         }
-
-        throw new RuntimeException('Got unexpected InternetAddressVersion: ' . $ipVersion->name);
     }
 
     protected function handleIncomingMessage(SnmpV1Message|SnmpV2Message $message, InternetAddress $peer): void
