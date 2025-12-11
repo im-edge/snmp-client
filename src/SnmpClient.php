@@ -313,6 +313,7 @@ class SnmpClient
     protected function handleIncomingMessage(SnmpV1Message|SnmpV2Message $message, InternetAddress $peer): void
     {
         $pdu = $message->getPdu();
+        $this->trace?->append($message, PacketDirection::INCOMING, $peer);
 
         // TODO: track v1/2 peers based on request ID
         if ($pdu instanceof TrapV2) {
